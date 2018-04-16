@@ -146,14 +146,14 @@ class SQLCompiler(compiler.SQLCompiler):
                 having, h_params = self.compile(self.having) if self.having is not None else ("", [])
                 params = []
                 result = ['SELECT']
-    
+
                 if self.query.distinct:
                     result.append(self.connection.ops.distinct_sql(distinct_fields))
-    
+
                 # SQL Server requires the keword for limitting at the begenning
                 if do_limit and not do_offset:
                     result.append('TOP %d' % high_mark)
-    
+
                 out_cols = []
                 col_idx = 1
                 for _, (s_sql, s_params), alias in self.select + extra_select:
@@ -164,7 +164,7 @@ class SQLCompiler(compiler.SQLCompiler):
                         col_idx += 1
                     params.extend(s_params)
                     out_cols.append(s_sql)
-    
+
                 # SQL Server requires an order-by clause for offsetting
                 if do_offset:
                     meta = self.query.get_meta()
@@ -190,9 +190,9 @@ class SQLCompiler(compiler.SQLCompiler):
                         out_cols.append('ROW_NUMBER() OVER (ORDER BY %s) AS [rn]' % offsetting_order_by)
                     elif not order_by:
                         order_by.append(((None, ('%s ASC' % offsetting_order_by, [], None))))
-    
+
                 result.append(', '.join(out_cols))
-    
+
                 if self.query.select_for_update and self.connection.features.has_select_for_update:
                     if self.connection.get_autocommit():
                         raise TransactionManagementError('select_for_update cannot be used outside of a transaction.')
@@ -230,7 +230,7 @@ class SQLCompiler(compiler.SQLCompiler):
                 if where:
                     result.append('WHERE %s' % where)
                     params.extend(w_params)
-    
+
                 grouping = []
                 for g_sql, g_params in group_by:
                     grouping.append(g_sql)
@@ -242,7 +242,7 @@ class SQLCompiler(compiler.SQLCompiler):
                     if not order_by:
                         order_by = self.connection.ops.force_no_ordering()
                     result.append('GROUP BY %s' % ', '.join(grouping))
-    
+
                 if having:
                     result.append('HAVING %s' % having)
                     params.extend(h_params)
@@ -371,14 +371,17 @@ class SQLInsertCompiler(compiler.SQLInsertCompiler, SQLCompiler):
         # necessary and it should be possible to use placeholders and
         # expressions in bulk inserts too.
         can_bulk = (not self.return_id and self.connection.features.has_bulk_insert) and has_fields
-
+        uniqueidentifier = opts.auto_field and opts.auto_field.db_type(self.connection)
+        uniqueidentifier = uniqueidentifier and uniqueidentifier.find('uniqueidentifier') > -1
         placeholder_rows, param_rows = self.assemble_as_sql(fields, value_rows)
-
         if self.return_id and self.connection.features.can_return_id_from_insert:
             result.insert(0, 'SET NOCOUNT ON')
+            if uniqueidentifier:
+                result.append('OUTPUT inserted.id')
             result.append((values_format + ';') % ', '.join(placeholder_rows[0]))
             params = [param_rows[0]]
-            result.append('SELECT CAST(SCOPE_IDENTITY() AS bigint)')
+            if not uniqueidentifier:
+                result.append('SELECT CAST(SCOPE_IDENTITY() AS bigint)')
             return [(" ".join(result), tuple(chain.from_iterable(params)))]
 
         if can_bulk:
@@ -398,9 +401,14 @@ class SQLInsertCompiler(compiler.SQLInsertCompiler, SQLCompiler):
                 if auto_field_column in columns:
                     id_insert_sql = []
                     table = qn(opts.db_table)
-                    sql_format = 'SET IDENTITY_INSERT %s ON; %s; SET IDENTITY_INSERT %s OFF'
-                    for q, p in sql:
-                        id_insert_sql.append((sql_format % (table, q, table), p))
+                    if uniqueidentifier:
+                        sql_format = '%s;'
+                        for q, p in sql:
+                            id_insert_sql.append((sql_format % (q,), p))
+                    else:
+                        sql_format = 'SET IDENTITY_INSERT %s ON; %s; SET IDENTITY_INSERT %s OFF'
+                        for q, p in sql:
+                            id_insert_sql.append((sql_format % (table, q, table), p))
                     sql = id_insert_sql
 
         return sql
